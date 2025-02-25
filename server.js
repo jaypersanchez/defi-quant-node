@@ -1,109 +1,72 @@
 require('dotenv').config();
 const express = require('express');
+const { ethers } = require('ethers');
 const Compound = require('@compound-finance/compound-js');
-const bodyParser = require('body-parser');
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
 const INFURA_URL = process.env.INFURA_URL;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const compound = new Compound(INFURA_URL, { privateKey: PRIVATE_KEY });
+const WALLET_ADDRESS = process.env.WALLET_ADDRESS;
 
-// 📌 Fetch Compound Rates
-app.get('/compound_rates', async (req, res) => {
+// ✅ Detect the correct JsonRpcProvider syntax
+let provider;
+if (ethers.providers) {
+    provider = new ethers.providers.JsonRpcProvider(INFURA_URL);  // ✅ For Ethers.js v5
+} else {
+    const { JsonRpcProvider } = require("ethers");
+    provider = new JsonRpcProvider(INFURA_URL);  // ✅ For Ethers.js v6
+}
+
+const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+const compound = new Compound(provider, { privateKey: PRIVATE_KEY });
+
+// Tokens Supported via SDK (No ABI Needed)
+const SDK_TOKENS = ["USDC", "DAI", "UNI", "LINK", "COMP", "AAVE", "MKR", "SUSHI"];
+
+// 📌 Get List of Supported Tokens
+app.get('/compound/supported-tokens', async (req, res) => {
+    res.json({ supportedTokens: SDK_TOKENS });
+});
+
+// 📌 Supply Assets to Compound (Only SDK Compatible Tokens)
+app.post('/compound/supply', async (req, res) => {
     try {
-        const blocksPerYear = 4 * 60 * 24 * 365; // ~2102400 blocks per year
+        const { token, amount } = req.body;
+        
+        if (!SDK_TOKENS.includes(token)) {
+            return res.status(400).json({
+                error: `Unsupported token '${token}'. We currently support: ${SDK_TOKENS.join(', ')}.`
+            });
+        }
 
-        // Fetch supply and borrow rates per block
-        const supplyRatePerBlock = await Compound.eth.read(
-            Compound.util.getAddress(Compound.cUSDC),
-            'function supplyRatePerBlock() public view returns (uint)',
-            [],
-            { provider: compound._provider }
-        );
+        const tx = await compound.supply(token, amount);
+        res.json({ message: `Supplied ${amount} ${token} to Compound`, txHash: tx });
 
-        const borrowRatePerBlock = await Compound.eth.read(
-            Compound.util.getAddress(Compound.cUSDC),
-            'function borrowRatePerBlock() public view returns (uint)',
-            [],
-            { provider: compound._provider }
-        );
-
-        // Convert to APY using Compound's formula: (1 + ratePerBlock) ^ blocksPerYear - 1
-        const supplyAPY = (Math.pow((supplyRatePerBlock / 1e18) + 1, blocksPerYear) - 1) * 100;
-        const borrowAPY = (Math.pow((borrowRatePerBlock / 1e18) + 1, blocksPerYear) - 1) * 100;
-
-        res.json({
-            USDC_Supply_APY: supplyAPY.toFixed(2), // Round to 2 decimal places
-            USDC_Borrow_APY: borrowAPY.toFixed(2)
-        });
     } catch (error) {
         res.status(500).json({ error: error.toString() });
     }
 });
 
-// 📌 Supply USDC
-app.post('/supply_usdc', async (req, res) => {
+// 📌 Borrow Assets from Compound (Only SDK Compatible Tokens)
+app.post('/compound/borrow', async (req, res) => {
     try {
-        const amount = req.body.amount;
-        console.log(`Supplying ${amount / 1e6} USDC to Compound...`);
+        const { token, amount } = req.body;
+        
+        if (!SDK_TOKENS.includes(token)) {
+            return res.status(400).json({
+                error: `Unsupported token '${token}'. We currently support: ${SDK_TOKENS.join(', ')}.`
+            });
+        }
 
-        const tx = await compound.supply(Compound.USDC, amount);
-        console.log("Supply USDC Transaction:", tx);
-
-        res.json({ message: `Supplied ${amount / 1e6} USDC`, tx });
+        const tx = await compound.borrow(token, amount);
+        res.json({ message: `Borrowed ${amount} ${token} from Compound`, txHash: tx });
 
     } catch (error) {
-        console.error("Supply USDC Error:", error);
-
-        // Extract error message
-        const errorMessage = error?.error?.message || error.message || error.toString();
-        res.status(500).json({ error: errorMessage });
+        res.status(500).json({ error: error.toString() });
     }
 });
 
-
-
-// 📌 Borrow DAI
-app.post('/borrow_dai', async (req, res) => {
-    try {
-        const amount = req.body.amount;
-        console.log(`Borrowing ${amount / 1e18} DAI from Compound...`);
-
-        const tx = await compound.borrow(Compound.DAI, amount);
-        console.log("Borrow DAI Transaction:", tx);
-
-        res.json({ message: `Borrowed ${amount / 1e18} DAI`, tx });
-
-    } catch (error) {
-        console.error("Borrow DAI Error:", error);
-
-        const errorMessage = error?.error?.message || error.message || error.toString();
-        res.status(500).json({ error: errorMessage });
-    }
-});
-
-
-// 📌 Repay DAI
-app.post('/repay_dai', async (req, res) => {
-    try {
-        const amount = req.body.amount;
-        console.log(`Repaying ${amount / 1e18} DAI to Compound...`);
-
-        const tx = await compound.repayBorrow(Compound.DAI, amount);
-        console.log("Repay DAI Transaction:", tx);
-
-        res.json({ message: `Repaid ${amount / 1e18} DAI`, tx });
-
-    } catch (error) {
-        console.error("Repay DAI Error:", error);
-
-        const errorMessage = error?.error?.message || error.message || error.toString();
-        res.status(500).json({ error: errorMessage });
-    }
-});
-
-
-// Start Server
-app.listen(4000, () => console.log('Compound API running on port 4000'));
+// 📌 Start the server
+app.listen(4000, () => console.log("🚀 Node.js API running on port 4000"));
